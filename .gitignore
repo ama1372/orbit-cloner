@@ -7,3 +7,6 @@ portable-data/
 _work/
 *.log
 /Orbit Cloner.exe
+
+/PROJECT_CONTEXT.en.md
+/run.py

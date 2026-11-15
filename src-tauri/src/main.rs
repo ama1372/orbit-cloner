@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod adopt;
 const NO_WINDOW: u32 = 0x08000000;
 type Result<T> = std::result::Result<T, String>;
 trait Explain<T> {
@@ -28,6 +29,10 @@ struct Profile {
     executable: String,
     color: String,
     number: u32,
+    #[serde(default)]
+    data_path: Option<String>,
+    #[serde(default)]
+    home_path: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,18 +312,18 @@ fn patch_fuses(bytes: &mut [u8]) -> Result<()> {
     }
     Ok(())
 }
-fn make_icons(dir: &Path, color: &str, number: u32) -> Result<()> {
+fn make_icons(dir: &Path, color: &str, number: u32, source: &Path) -> Result<()> {
     let rgb =
         u32::from_str_radix(color.trim_start_matches('#'), 16).map_err(|_| "Invalid color")?;
-    let mut img = image::RgbaImage::new(128, 128);
-    for (x, y, pixel) in img.enumerate_pixels_mut() {
-        let dx = x as f32 - 63.5;
-        let dy = y as f32 - 63.5;
-        *pixel = if dx * dx + dy * dy < 61.0 * 61.0 {
-            image::Rgba([(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255])
-        } else {
-            image::Rgba([0, 0, 0, 0])
-        };
+    let logo=dir.join("original-logo.png");
+    let script=format!("$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Drawing;$i=[System.Drawing.Icon]::ExtractAssociatedIcon({});$b=$i.ToBitmap();$b.Save({},[System.Drawing.Imaging.ImageFormat]::Png);$b.Dispose();$i.Dispose()",ps_quote(&source.to_string_lossy()),ps_quote(&logo.to_string_lossy()));
+    let out=Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",&script]).creation_flags(NO_WINDOW).output().explain()?;
+    if !out.status.success(){return Err("Unable to extract original app icon".into());}
+    let original=image::open(&logo).explain()?.to_rgba8();
+    let mut img=image::imageops::resize(&original,128,128,image::imageops::FilterType::Lanczos3);
+    for (x,y,pixel) in img.enumerate_pixels_mut(){
+        let dx=x as f32-99.0;let dy=y as f32-99.0;
+        if dx*dx+dy*dy<28.0*28.0{*pixel=image::Rgba([(rgb>>16)as u8,(rgb>>8)as u8,rgb as u8,255]);}
     }
     let digits = [
         0b111101101101111u16,
@@ -333,7 +338,7 @@ fn make_icons(dir: &Path, color: &str, number: u32) -> Result<()> {
         0b111101111001111,
     ];
     let label = number.to_string();
-    let scale = if label.len() > 1 { 9 } else { 15 };
+    let scale = if label.len() > 1 { 5 } else { 8 };
     let width = label.len() as u32 * 4 * scale - scale;
     for (i, ch) in label.chars().enumerate() {
         let bits = digits[ch.to_digit(10).unwrap() as usize];
@@ -343,8 +348,8 @@ fn make_icons(dir: &Path, color: &str, number: u32) -> Result<()> {
                     for sy in 0..scale {
                         for sx in 0..scale {
                             img.put_pixel(
-                                (128 - width) / 2 + i as u32 * 4 * scale + x * scale + sx,
-                                (128 - 5 * scale) / 2 + y * scale + sy,
+                                (198 - width) / 2 + i as u32 * 4 * scale + x * scale + sx,
+                                (198 - 5 * scale) / 2 + y * scale + sy,
                                 image::Rgba([255, 255, 255, 255]),
                             );
                         }
@@ -398,12 +403,12 @@ fn build_runtime(store: &Store, p: &Profile) -> Result<()> {
     fs::write(
         boot.join("profile.json"),
         serde_json::to_vec(
-            &serde_json::json!({"name":p.name,"identity":format!("Orbit.Profile.{}",p.id)}),
+            &serde_json::json!({"name":p.name,"dataPath":p.data_path,"preserveName":p.data_path.is_some(),"identity":format!("Orbit.Profile.{}",p.id)}),
         )
         .explain()?,
     )
     .explain()?;
-    make_icons(&dir, &p.color, p.number)?;
+    make_icons(&dir, &p.color, p.number, &source)?;
     let runtime = dir.join("runtime");
     let previous = dir.join("previous-runtime");
     if previous.exists() {
@@ -462,7 +467,7 @@ async fn create_profile(
             source,
             executable: source_path.file_name().unwrap().to_string_lossy().into(),
             color,
-            number,
+            number, data_path:None,home_path:None,
         };
         build_runtime(&store, &p)?;
         profiles.push(p);
@@ -517,8 +522,8 @@ fn launch(store: &Store, id: &str, url: Option<String>) -> Result<()> {
     let p = find_profile(store, id)?;
     let dir = profile_dir(store, id)?;
     let exe = dir.join("runtime").join(&p.executable);
-    let data = dir.join("data");
-    let home = dir.join("home");
+    let data = p.data_path.as_ref().map(PathBuf::from).unwrap_or_else(||dir.join("data"));
+    let home = p.home_path.as_ref().map(PathBuf::from).unwrap_or_else(||dir.join("home"));
     fs::create_dir_all(&data).explain()?;
     fs::create_dir_all(&home).explain()?;
     let mut cmd = Command::new(exe);
@@ -551,6 +556,10 @@ fn launch(store: &Store, id: &str, url: Option<String>) -> Result<()> {
         cmd.arg(url);
     }
     cmd.creation_flags(NO_WINDOW).spawn().explain()?;
+    let watcher=dir.join("taskbar.ps1");
+    fs::write(&watcher,include_str!("taskbar.ps1")).explain()?;
+    Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File"]).arg(&watcher).arg("-Runtime").arg(dir.join("runtime").join(&p.executable)).arg("-Icon").arg(dir.join("icon.ico")).arg("-Name").arg(&p.name).arg("-Identity").arg(format!("Orbit.Profile.{}",p.id)).arg("-Manager").arg(std::env::current_exe().explain()?).arg("-Id").arg(&p.id).creation_flags(NO_WINDOW).spawn().explain()?;
+
     Ok(())
 }
 #[tauri::command]
@@ -618,6 +627,11 @@ fn register_links(store: tauri::State<Store>, id: String) -> Result<()> {
     open_with.set_value(&progid, &"").explain()?;
     Ok(())
 }
+#[tauri::command]
+async fn adopt_claude_family(store:tauri::State<'_,Store>,source:String)->Result<Snapshot>{
+ let root=store.root.clone();let gate=store.gate.clone();
+ tauri::async_runtime::spawn_blocking(move||{let _lock=gate.lock().map_err(|_|"Store busy")?;adopt::adopt_family(&Store{root,gate:gate.clone()},source)}).await.explain()?
+}
 fn main() {
     let root = std::env::current_exe()
         .expect("Executable path")
@@ -647,10 +661,19 @@ fn main() {
         }
         return;
     }
+    if args.get(1).map(String::as_str)==Some("--repair-claude-family") {
+        let result=args.get(2).ok_or("Missing source executable".to_string()).and_then(|source|adopt::adopt_family(&store,source.clone()));
+        let report=match result {Ok(_)=>serde_json::json!({"ok":true}),Err(e)=>serde_json::json!({"ok":false,"error":e})};
+        let _=fs::write(store.root.join("repair-result.json"),serde_json::to_vec(&report).unwrap());return;
+    }
+    if args.get(1).map(String::as_str)==Some("--refresh-icons") {
+        if let Some(id)=args.get(2){let result=find_profile(&store,id).and_then(|p|{let dir=profile_dir(&store,id)?;make_icons(&dir,&p.color,p.number,Path::new(&p.source))?;fs::write(dir.join("runtime/resources/app/index.cjs"),include_str!("bootstrap.cjs")).explain()});let _=fs::write(store.root.join("icon-result.json"),serde_json::to_vec(&serde_json::json!({"ok":result.is_ok(),"error":result.err()})).unwrap());}return;
+    }
     tauri::Builder::default()
         .manage(store)
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            adopt_claude_family,
             scan_existing,
             launch_existing,
             remove_existing,
@@ -721,7 +744,7 @@ mod tests {
                 .into(),
             source,
             color: "#698dcc".into(),
-            number: 1,
+            number: 1,data_path:None,home_path:None,
         };
         build_runtime(&store, &p).unwrap();
         let dir = profile_dir(&store, &p.id).unwrap();

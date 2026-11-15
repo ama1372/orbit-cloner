@@ -6,7 +6,7 @@ const { pathToFileURL } = require('url');
 const electron = require('electron');
 const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'profile.json'), 'utf8'));
 const root = path.resolve(__dirname, '../../..');
-const data = path.join(root, 'data');
+const data = cfg.dataPath || path.join(root, 'data');
 fs.mkdirSync(data, { recursive: true });
 const { app } = electron;
 const archive = path.join(__dirname, '..', 'vendor.asar');
@@ -17,9 +17,10 @@ const setPath = app.setPath.bind(app);
 setPath('userData', data);
 setPath('sessionData', data);
 app.setPath = (key, value) => setPath(key, ['userData', 'sessionData'].includes(key) ? data : value);
-app.setName(cfg.name);
+const internalName = cfg.preserveName ? 'Claude' : cfg.name;
+app.setName(internalName);
 app.setName = () => {};
-app.getName = () => cfg.name;
+app.getName = () => internalName;
 app.setAppUserModelId(cfg.identity);
 app.setAppUserModelId = () => {};
 app.getAppPath = () => archive;
@@ -34,6 +35,10 @@ class ProfileTray extends electron.Tray {
   constructor() { super(icon); this.setToolTip(cfg.name); }
   setImage() { return super.setImage(icon); }
   setToolTip() { return super.setToolTip(cfg.name); }
+}
+for (const [key,value] of Object.entries({BrowserWindow:ProfileWindow,Tray:ProfileTray})) {
+  const descriptor=Object.getOwnPropertyDescriptor(electron,key);
+  if(descriptor?.configurable)Object.defineProperty(electron,key,{value,configurable:true});
 }
 const wrapped = new Proxy(electron, { get(target, key) {
   if (key === 'BrowserWindow') return ProfileWindow;
@@ -53,6 +58,11 @@ app.on('browser-window-created', (_, win) => {
   win.setTitle();
   win.on('page-title-updated', event => { event.preventDefault(); win.setTitle(cfg.name); });
 });
+const enforceWindowIdentity=setInterval(()=>{
+ for(const win of electron.BrowserWindow.getAllWindows()){
+  if(!win.isDestroyed()){win.setIcon(icon);win.setTitle(cfg.name);}
+ }
+},1000);enforceWindowIdentity.unref();
 // Managed copies must be refreshed through the manager, not vendor updaters.
 for (const key of ['checkForUpdates', 'quitAndInstall', 'setFeedURL']) {
   if (electron.autoUpdater) electron.autoUpdater[key] = () => {};

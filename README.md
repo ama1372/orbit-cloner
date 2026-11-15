@@ -2,7 +2,7 @@
 
 A portable Windows profile manager built with **Rust + Tauri 2 + Svelte 5**. Persian, right-to-left interface. MIT licensed.
 
-> **0.1 preview:** intended for experimentation with locally installed Electron applications. Account isolation, concurrent operation, vendor updates, notifications and browser authentication callbacks require application-specific testing. This is not a Windows security sandbox.
+> **0.2 preview:** intended for experimentation with locally installed Electron applications. Account isolation, concurrent operation, vendor updates, notifications and browser authentication callbacks require application-specific testing. This is not a Windows security sandbox.
 
 ## فارسی
 
@@ -18,7 +18,7 @@ Orbit برای ساخت فضای مستقل از برنامه‌های Electron 
 - اسکن خودکار میان‌برهای Claude و Codex در دسکتاپ و Start؛ اجرای نسخه‌های قبلی و حذف از فهرست
 - حذف نسخه‌های Orbit با تأیید و انتقال فایل‌ها به پوشهٔ محلی `trash`
 
-برای نسخه‌های قدیمی فقط اجرا و حذف از فهرست در دسترس است. ترمیم مستقیم کلون‌های ساخته‌شده با ابزارهای دیگر، جداسازی قطعی OAuth و انتقال حساب‌های قبلی در این نسخه پیاده نشده است.
+برای نسخه‌های قدیمی فقط اجرا و حذف از فهرست در دسترس است. ترمیم با حفظ حساب برای چیدمان شناسایی‌شدهٔ ClaudeFamily اضافه شده است؛ جداسازی قطعی OAuth و چیدمان‌های دیگر هنوز نیاز به آزمون دارند.
 
 ## Run the portable app
 
@@ -68,3 +68,15 @@ cargo test --manifest-path src-tauri/Cargo.toml --release installed_runtime_buil
 ```
 
 Do not commit `portable-data/`, runtime copies, credentials, screenshots containing private data, or vendor executables. This repository distributes only Orbit's own code; vendor software remains subject to its original license. Orbit is an independent project, unaffiliated with OpenAI or Anthropic.
+
+## Contributing
+
+Contributions are welcome, including improvements made with AI coding assistants. Orbit Cloner is free and open source under the MIT license. Review and test generated changes, and never submit private project files, account data or credentials. Local development handoff files (`PROJECT_CONTEXT.en.md` and `run.py`) are not required to build or contribute and are excluded from the current source distribution.
+
+## Repair an existing Claude 2 account
+
+Version 0.2 adds **ترمیم با حفظ حساب** beside a recognized Claude 2 shortcut. This adapter supports the legacy `Anthropic/ClaudeFamily` layout and its MSIX LocalCache redirected location. Close Claude 2 fully first. Orbit copies its application runtime, makes a complete offline backup of its account and CLI directories, and keeps using the original account directories in place. The desktop and Start shortcuts are backed up before being redirected to the blue numbered Orbit runtime. Existing credentials are never reset or deleted. Unsupported layouts fail without guessing another account directory.
+
+Adopted account directories remain outside the portable folder. Removing the Orbit entry does not remove the original account. `account-backup` contains sensitive credentials and is never packaged in releases. Vendor authentication and browser callbacks still require a live check; retaining all account bytes does not guarantee that a vendor will never ask for reauthentication.
+
+Original application logos are preserved with a small colored numbered badge. A per-profile Windows helper applies and verifies the native window AppUserModelID and taskbar icon; only that runtime is targeted.
