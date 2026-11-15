@@ -84,3 +84,5 @@ Original application logos are preserved with a small colored numbered badge. A 
 Version 0.2.1 also embeds the numbered logo into copied EXE icon resources and refreshes the recognized legacy Claude Family pin with a new taskbar identity. Existing source EXE files remain unchanged. The account-preserving adapter is specific to recognized ClaudeFamily layouts; it does not guess arbitrary third-party profile locations.
 
 Local acceptance: the recognized legacy Claude 2 account remained signed in after adoption. Its complete offline account backup was byte-verified across 26,472 files. The corrected taskbar logo badge was confirmed in live use. This verifies the tested ClaudeFamily installation, not every Claude version or arbitrary clone layout.
+
+Version 0.2.2 fixes Codex clone creation when associated-icon extraction fails: bundled vendor logo resources are preferred, with native icon extraction as fallback. Full runtime creation and repair were verified against an installed Codex package without launching or signing into test copies.

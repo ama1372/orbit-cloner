@@ -316,10 +316,21 @@ fn make_icons(dir: &Path, color: &str, number: u32, source: &Path) -> Result<()>
     let rgb =
         u32::from_str_radix(color.trim_start_matches('#'), 16).map_err(|_| "Invalid color")?;
     let logo=dir.join("original-logo.png");
-    let script=format!("$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Drawing;$i=[System.Drawing.Icon]::ExtractAssociatedIcon({});$b=$i.ToBitmap();$b.Save({},[System.Drawing.Imaging.ImageFormat]::Png);$b.Dispose();$i.Dispose()",ps_quote(&source.to_string_lossy()),ps_quote(&logo.to_string_lossy()));
-    let out=Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",&script]).creation_flags(NO_WINDOW).output().explain()?;
-    if !out.status.success(){return Err("Unable to extract original app icon".into());}
-    let original=image::open(&logo).explain()?.to_rgba8();
+    let resources=source.parent().ok_or("Invalid app path")?.join("resources");
+    let mut original=None;
+    // Packaged apps often provide a higher quality logo separately from their launcher.
+    for name in ["chatgpt-app-dark.ico","icon-chatgpt.ico","chatgpt-app-light.ico","claude.ico","icon.ico","icon.png"] {
+        if let Ok(decoded)=image::open(resources.join(name)) { original=Some(decoded.to_rgba8());break; }
+    }
+    let original=if let Some(original)=original {original} else {
+        let source_text=source.to_string_lossy();
+        let shell_source=source_text.strip_prefix(r"\\?\").unwrap_or(&source_text);
+        let script=format!("$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Drawing;$i=[System.Drawing.Icon]::ExtractAssociatedIcon({});if(-not $i){{throw 'No associated icon'}};$b=$i.ToBitmap();try{{$b.Save({},[System.Drawing.Imaging.ImageFormat]::Png)}}finally{{$b.Dispose();$i.Dispose()}}",ps_quote(shell_source),ps_quote(&logo.to_string_lossy()));
+        let out=Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",&script]).creation_flags(NO_WINDOW).output().explain()?;
+        if !out.status.success(){return Err(format!("استخراج آیکون برنامه ناموفق بود: {}",String::from_utf8_lossy(&out.stderr).trim()));}
+        image::open(&logo).explain()?.to_rgba8()
+    };
+    original.save(&logo).explain()?;
     let mut img=image::imageops::resize(&original,128,128,image::imageops::FilterType::Lanczos3);
     for (x,y,pixel) in img.enumerate_pixels_mut(){
         let dx=x as f32-99.0;let dy=y as f32-99.0;
