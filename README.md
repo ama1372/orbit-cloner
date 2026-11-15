@@ -71,7 +71,7 @@ Do not commit `portable-data/`, runtime copies, credentials, screenshots contain
 
 ## Contributing
 
-Contributions are welcome, including improvements made with AI coding assistants. Orbit Cloner is free and open source under the MIT license. Review and test generated changes, and never submit private project files, account data or credentials. Local development handoff files (`PROJECT_CONTEXT.en.md` and `run.py`) are not required to build or contribute and are excluded from the current source distribution.
+Contributions are welcome, including improvements made with AI coding assistants. Orbit Cloner is free and open source under the MIT license. Review and test generated changes, and never submit private project files, account data or credentials.
 
 ## Repair an existing Claude 2 account
 
