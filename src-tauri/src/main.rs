@@ -9,6 +9,8 @@ use std::{
 };
 
 mod adopt;
+mod archive;
+mod lifecycle;
 const NO_WINDOW: u32 = 0x08000000;
 type Result<T> = std::result::Result<T, String>;
 trait Explain<T> {
@@ -92,7 +94,14 @@ fn inspect(store: &Store) -> Result<Snapshot> {
         .map(|p| {
             let dir = profile_dir(store, &p.id).unwrap();
             let runtime = dir.join("runtime");
+            if !runtime.join("resources/app.asar").exists()
+                && runtime.join("resources/vendor.asar").is_file()
+                && fs::read_to_string(runtime.join("resources/app/index.cjs")).unwrap_or_default()==include_str!("bootstrap.cjs") {
+                let _=archive::ensure_bootstrap(&runtime.join("resources"));
+            }
+
             let healthy = runtime.join(&p.executable).is_file()
+                && runtime.join("resources/app.asar").is_file()
                 && runtime.join("resources/vendor.asar").is_file()
                 && fs::read_to_string(runtime.join("resources/app/index.cjs")).unwrap_or_default()
                     == include_str!("bootstrap.cjs")
@@ -190,14 +199,18 @@ fn remove_existing(store: tauri::State<Store>, id: String) -> Result<Snapshot> {
 #[tauri::command]
 fn remove_profile(store: tauri::State<Store>, id: String) -> Result<Snapshot> {
     let _guard = store.gate.lock().map_err(|_| "Profile store is busy")?;
+    remove_managed_profile(&store,&id)
+}
+fn remove_managed_profile(store:&Store,id:&str)->Result<Snapshot>{
     let mut profiles = read_profiles(&store)?;
     find_profile(&store, &id)?;
     let dir = profile_dir(&store, &id)?;
+    lifecycle::close_runtime(&dir)?;
     let trash = store.root.join("trash");
     fs::create_dir_all(&trash).explain()?;
     let dest = trash.join(format!("{}-{}", id, uuid::Uuid::new_v4()));
     if dir.exists() {
-        fs::rename(&dir, &dest).map_err(|e| format!("Close the clone before removing it: {e}"))?;
+        lifecycle::move_to_trash(&dir,&dest)?;
     }
     profiles.retain(|p| p.id != id);
     if let Err(error) = save_profiles(&store, &profiles) {
@@ -421,6 +434,7 @@ fn build_runtime(store: &Store, p: &Profile) -> Result<()> {
         .explain()?,
     )
     .explain()?;
+    archive::ensure_bootstrap(&resources)?;
     make_icons(&dir, &p.color, p.number, &source)?;
     let native_icon_script=dir.join("patch-icon.ps1");
     fs::write(&native_icon_script,include_str!("patch-icon.ps1")).explain()?;
@@ -444,6 +458,11 @@ fn build_runtime(store: &Store, p: &Profile) -> Result<()> {
     }
     Ok(())
 }
+fn badge_number(name:&str,requested:Option<u32>,fallback:u32)->Result<u32>{
+ let suffix:String=name.trim().chars().rev().take_while(|c|c.is_ascii_digit()).collect::<String>().chars().rev().collect();
+ let number=requested.or_else(||suffix.parse().ok()).unwrap_or(fallback);
+ if !(1..=99).contains(&number){return Err("شمارهٔ آیکون باید از ۱ تا ۹۹ باشد.".into());}Ok(number)
+}
 #[tauri::command]
 async fn create_profile(
     store: tauri::State<'_, Store>,
@@ -451,6 +470,7 @@ async fn create_profile(
     kind: String,
     source: String,
     color: String,
+    number: Option<u32>,
 ) -> Result<Snapshot> {
     let root = store.root.clone();
     let gate = store.gate.clone();
@@ -474,7 +494,7 @@ async fn create_profile(
         }
         validate_source(Path::new(&source), &store.root)?;
         let mut profiles = read_profiles(&store)?;
-        let number = profiles.iter().map(|p| p.number).max().unwrap_or(0) + 1;
+        let number = badge_number(&name,number,profiles.iter().map(|p| p.number).max().unwrap_or(0) + 1)?;
         if number > 99 {
             return Err("Up to 99 profiles are supported".into());
         }
@@ -540,6 +560,7 @@ fn launch(store: &Store, id: &str, url: Option<String>) -> Result<()> {
     let p = find_profile(store, id)?;
     let dir = profile_dir(store, id)?;
     let exe = dir.join("runtime").join(&p.executable);
+    archive::ensure_bootstrap(&dir.join("runtime/resources"))?;
     let data = p.data_path.as_ref().map(PathBuf::from).unwrap_or_else(||dir.join("data"));
     let home = p.home_path.as_ref().map(PathBuf::from).unwrap_or_else(||dir.join("home"));
     fs::create_dir_all(&data).explain()?;
@@ -685,7 +706,11 @@ fn main() {
         let _=fs::write(store.root.join("repair-result.json"),serde_json::to_vec(&report).unwrap());return;
     }
     if args.get(1).map(String::as_str)==Some("--refresh-icons") {
-        if let Some(id)=args.get(2){let result=find_profile(&store,id).and_then(|p|{let dir=profile_dir(&store,id)?;make_icons(&dir,&p.color,p.number,Path::new(&p.source))?;fs::write(dir.join("runtime/resources/app/index.cjs"),include_str!("bootstrap.cjs")).explain()});let _=fs::write(store.root.join("icon-result.json"),serde_json::to_vec(&serde_json::json!({"ok":result.is_ok(),"error":result.err()})).unwrap());}return;
+        if let Some(id)=args.get(2){let result=find_profile(&store,id).and_then(|p|{let dir=profile_dir(&store,id)?;make_icons(&dir,&p.color,p.number,Path::new(&p.source))?;fs::write(dir.join("runtime/resources/app/index.cjs"),include_str!("bootstrap.cjs")).explain()?;archive::ensure_bootstrap(&dir.join("runtime/resources"))});let _=fs::write(store.root.join("icon-result.json"),serde_json::to_vec(&serde_json::json!({"ok":result.is_ok(),"error":result.err()})).unwrap());}return;
+    }
+    if args.get(1).map(String::as_str)==Some("--remove-profile") {
+        let result=args.get(2).ok_or("Missing profile identifier".to_string()).and_then(|id|remove_managed_profile(&store,id));
+        let report=match result {Ok(_)=>serde_json::json!({"ok":true}),Err(e)=>serde_json::json!({"ok":false,"error":e})};let _=fs::write(store.root.join("remove-result.json"),serde_json::to_vec(&report).unwrap());return;
     }
     tauri::Builder::default()
         .manage(store)
@@ -712,6 +737,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn badge_number_tracks_name_and_respects_explicit_choice(){
+        assert_eq!(badge_number("Codex 3",None,1).unwrap(),3);
+        assert_eq!(badge_number("Codex 3",Some(7),1).unwrap(),7);
+        assert_eq!(badge_number("Work",None,2).unwrap(),2);
+        assert!(badge_number("Codex",Some(0),1).is_err());
+        assert!(badge_number("Codex",Some(100),1).is_err());
+    }
     #[test]
     fn changes_only_integrity_fuses() {
         let mut bytes = [SENTINEL, &[1, 8], b"11001101", b"tail"].concat();
