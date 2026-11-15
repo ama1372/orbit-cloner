@@ -80,3 +80,7 @@ Version 0.2 adds **ترمیم با حفظ حساب** beside a recognized Claude 
 Adopted account directories remain outside the portable folder. Removing the Orbit entry does not remove the original account. `account-backup` contains sensitive credentials and is never packaged in releases. Vendor authentication and browser callbacks still require a live check; retaining all account bytes does not guarantee that a vendor will never ask for reauthentication.
 
 Original application logos are preserved with a small colored numbered badge. A per-profile Windows helper applies and verifies the native window AppUserModelID and taskbar icon; only that runtime is targeted.
+
+Version 0.2.1 also embeds the numbered logo into copied EXE icon resources and refreshes the recognized legacy Claude Family pin with a new taskbar identity. Existing source EXE files remain unchanged. The account-preserving adapter is specific to recognized ClaudeFamily layouts; it does not guess arbitrary third-party profile locations.
+
+Local acceptance: the recognized legacy Claude 2 account remained signed in after adoption. Its complete offline account backup was byte-verified across 26,472 files. The corrected taskbar logo badge was confirmed in live use. This verifies the tested ClaudeFamily installation, not every Claude version or arbitrary clone layout.

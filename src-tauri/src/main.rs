@@ -130,7 +130,7 @@ async fn scan_existing(store: tauri::State<'_, Store>) -> Result<Snapshot> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard=gate.lock().map_err(|_|"Profile store is busy")?;
         let store=Store{root,gate:gate.clone()};
-        let script="$ErrorActionPreference='Stop'; $w=New-Object -ComObject WScript.Shell; $rows=@(); $roots=@([Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('StartMenu')); foreach($root in $roots){ Get-ChildItem -LiteralPath $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.BaseName -match '(?i)claude|codex' -and $_.BaseName -notmatch '(?i)helper|startup' -and $_.FullName -notmatch '\\\\Startup\\\\'} | ForEach-Object { $s=$w.CreateShortcut($_.FullName); $rows+=@{id='';name=$_.BaseName;shortcut=$_.FullName;target=$s.TargetPath;available=[bool](Test-Path -LiteralPath $s.TargetPath)} } }; ConvertTo-Json -InputObject @($rows) -Compress";
+        let script="$ErrorActionPreference='Stop'; $w=New-Object -ComObject WScript.Shell; $rows=@(); $roots=@([Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('StartMenu')); foreach($root in $roots){ Get-ChildItem -LiteralPath $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.BaseName -match '(?i)claude|codex' -and $_.BaseName -notmatch '(?i)helper|startup' -and $_.FullName -notmatch '\\\\Startup\\\\'} | ForEach-Object { $s=$w.CreateShortcut($_.FullName); if($s.Arguments -like '--launch *' -and [IO.Path]::GetFileName($s.TargetPath) -match 'orbit.cloner|orbit-cloner'){return}; $rows+=@{id='';name=$_.BaseName;shortcut=$_.FullName;target=$s.TargetPath;available=[bool](Test-Path -LiteralPath $s.TargetPath)} } }; ConvertTo-Json -InputObject @($rows) -Compress";
         let out=Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).creation_flags(NO_WINDOW).output().explain()?;
         if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).into());}
         let found:Vec<Existing>=serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim_start_matches('\u{feff}').trim()).explain()?;
@@ -207,7 +207,7 @@ fn remove_profile(store: tauri::State<Store>, id: String) -> Result<Snapshot> {
         return Err(error);
     }
     let _ = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .delete_subkey_all(format!("Software\\Classes\\Orbit.Profile.{}", id));
+        .delete_subkey_all(format!("Software\\Classes\\Orbit.Profile.{}.Badged", id));
     Ok(inspect(&store)?)
 }
 #[tauri::command]
@@ -372,6 +372,8 @@ fn build_runtime(store: &Store, p: &Profile) -> Result<()> {
     // Only application files are copied. Profiles, cookies and credentials are never imported.
     copy_tree(source.parent().unwrap(), &staging)?;
     let exe = staging.join(&p.executable);
+    let copied_exe=staging.join(source.file_name().unwrap());
+    if copied_exe!=exe {fs::rename(&copied_exe,&exe).explain()?;}
     let mut bytes = fs::read(&exe).explain()?;
     // Component Electron distributions keep the fuse wire in chrome.dll.
     let fuse_target = if bytes.windows(SENTINEL.len()).any(|w| w == SENTINEL) {
@@ -403,12 +405,17 @@ fn build_runtime(store: &Store, p: &Profile) -> Result<()> {
     fs::write(
         boot.join("profile.json"),
         serde_json::to_vec(
-            &serde_json::json!({"name":p.name,"dataPath":p.data_path,"preserveName":p.data_path.is_some(),"identity":format!("Orbit.Profile.{}",p.id)}),
+            &serde_json::json!({"name":p.name,"dataPath":p.data_path,"preserveName":p.data_path.is_some(),"identity":format!("Orbit.Profile.{}.Badged",p.id)}),
         )
         .explain()?,
     )
     .explain()?;
     make_icons(&dir, &p.color, p.number, &source)?;
+    let native_icon_script=dir.join("patch-icon.ps1");
+    fs::write(&native_icon_script,include_str!("patch-icon.ps1")).explain()?;
+    let output=Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File"]).arg(&native_icon_script).arg("-Executable").arg(staging.join(&p.executable)).arg("-Icon").arg(dir.join("icon.ico")).creation_flags(NO_WINDOW).output().explain()?;
+    if !output.status.success(){return Err(format!("Copied executable icon update failed: {}",String::from_utf8_lossy(&output.stderr)));}
+
     let runtime = dir.join("runtime");
     let previous = dir.join("previous-runtime");
     if previous.exists() {
@@ -454,7 +461,7 @@ async fn create_profile(
         {
             return Err("Invalid color".into());
         }
-        let source_path = validate_source(Path::new(&source), &store.root)?;
+        validate_source(Path::new(&source), &store.root)?;
         let mut profiles = read_profiles(&store)?;
         let number = profiles.iter().map(|p| p.number).max().unwrap_or(0) + 1;
         if number > 99 {
@@ -465,7 +472,7 @@ async fn create_profile(
             name: name.trim().into(),
             kind,
             source,
-            executable: source_path.file_name().unwrap().to_string_lossy().into(),
+            executable: format!("Orbit-{}.exe",number),
             color,
             number, data_path:None,home_path:None,
         };
@@ -558,7 +565,7 @@ fn launch(store: &Store, id: &str, url: Option<String>) -> Result<()> {
     cmd.creation_flags(NO_WINDOW).spawn().explain()?;
     let watcher=dir.join("taskbar.ps1");
     fs::write(&watcher,include_str!("taskbar.ps1")).explain()?;
-    Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File"]).arg(&watcher).arg("-Runtime").arg(dir.join("runtime").join(&p.executable)).arg("-Icon").arg(dir.join("icon.ico")).arg("-Name").arg(&p.name).arg("-Identity").arg(format!("Orbit.Profile.{}",p.id)).arg("-Manager").arg(std::env::current_exe().explain()?).arg("-Id").arg(&p.id).creation_flags(NO_WINDOW).spawn().explain()?;
+    Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File"]).arg(&watcher).arg("-Runtime").arg(dir.join("runtime").join(&p.executable)).arg("-Icon").arg(dir.join("icon.ico")).arg("-Name").arg(&p.name).arg("-Identity").arg(format!("Orbit.Profile.{}.Badged",p.id)).arg("-Manager").arg(std::env::current_exe().explain()?).arg("-Id").arg(&p.id).creation_flags(NO_WINDOW).spawn().explain()?;
 
     Ok(())
 }
@@ -600,7 +607,7 @@ fn register_links(store: tauri::State<Store>, id: String) -> Result<()> {
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
     let p = find_profile(&store, &id)?;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let progid = format!("Orbit.Profile.{}", id);
+    let progid = format!("Orbit.Profile.{}.Badged", id);
     let (key, _) = hkcu
         .create_subkey(format!("Software\\Classes\\{}", progid))
         .explain()?;

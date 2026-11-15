@@ -1,6 +1,6 @@
 [package]
 name = "orbit-cloner"
-version = "0.2.0"
+version = "0.2.1"
 description = "Portable Windows Electron profile manager"
 edition = "2021"
 license = "MIT"
